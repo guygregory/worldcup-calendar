@@ -1,0 +1,124 @@
+name: Update knockout line-ups
+
+# Agentic workflow: twice a day it asks the GitHub Copilot coding agent to
+# check the latest FIFA World Cup 2026 results and fill in the knockout-stage
+# line-ups (Round of 32 -> Final) as teams are confirmed.
+#
+# Schedule is UTC. During the tournament the UK observes British Summer Time
+# (BST = UTC+1), so:
+#   00:00 UTC = 01:00 UK   |   12:00 UTC = 13:00 UK
+# The tournament ends on 19 July 2026, so the workflow stops taking action
+# after 21 July 2026 (see the "Stop after 21 July 2026" guard below).
+on:
+  schedule:
+    - cron: '0 0,12 * * *'   # 01:00 and 13:00 UK time (BST)
+  workflow_dispatch:          # allow manual runs
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: update-knockouts
+  cancel-in-progress: false
+
+jobs:
+  request-update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stop after 21 July 2026
+        id: window
+        run: |
+          today="$(date -u +%Y-%m-%d)"
+          if [[ "$today" > "2026-07-21" ]]; then
+            echo "Tournament finished; no more knockout checks after 2026-07-21 (today is $today)."
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Delegate line-up update to Copilot
+        if: steps.window.outputs.active == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const label = 'knockout-update';
+
+            // Avoid stacking duplicate tasks: skip if an update issue is still open.
+            const existing = await github.rest.issues.listForRepo({
+              owner, repo, state: 'open', labels: label, per_page: 1,
+            });
+            if (existing.data.length > 0) {
+              core.info(`Open update issue already exists: #${existing.data[0].number}. Skipping.`);
+              return;
+            }
+
+            // Ensure the tracking label exists.
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: label });
+            } catch {
+              await github.rest.issues.createLabel({
+                owner, repo, name: label, color: '1d76db',
+                description: 'Automated knockout-stage line-up update',
+              });
+            }
+
+            // Find the Copilot coding agent so the issue can be assigned to it.
+            const actors = await github.graphql(`
+              query($owner: String!, $repo: String!) {
+                repository(owner: $owner, name: $repo) {
+                  id
+                  suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) {
+                    nodes { login __typename ... on Bot { id } ... on User { id } }
+                  }
+                }
+              }`, { owner, repo });
+
+            const copilot = actors.repository.suggestedActors.nodes.find(
+              a => a.login === 'copilot-swe-agent' || a.login === 'Copilot');
+
+            const fixturesUrl = 'https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/scores-fixtures?country=GB&wtw-filter=ALL&stage=none&team=none';
+            const body = [
+              '## Task: update World Cup 2026 knockout line-ups',
+              '',
+              `Check the latest results on the official FIFA fixtures page and fill in any newly-confirmed knockout teams:`,
+              '',
+              fixturesUrl,
+              '',
+              '### What to do',
+              '1. Open `scripts/build-data.js` and look at the `KO` array (Round of 32 through the Final).',
+              '2. Each knockout slot uses a placeholder such as `\'W:A\'` (winner of Group A), `\'R:B\'` (runner-up of Group B), `\'3:C,D,F,G,H\'` (a third-placed team), `\'M:74\'` (winner of match 74) or `\'ML:101\'` (loser of match 101).',
+              '3. For every knockout match whose participants are now **confirmed by results**, replace the placeholder string with the resolved three-letter team code (e.g. `\'W:A\'` -> `\'MEX\'`). Team codes are the keys in `data/teams.json`.',
+              '4. Only change slots that are genuinely decided. Leave undecided slots as their placeholders.',
+              '5. Run `node scripts/build-data.js` and `node scripts/build-ics.js` to regenerate `data/fixtures.json` and the `feeds/*.ics` calendars, and make sure both succeed.',
+              '6. Open a pull request with the updated `scripts/build-data.js`, `data/fixtures.json` and regenerated feeds.',
+              '',
+              'If no new results are available since the last update, make no changes and simply note that in the pull request or close the task.',
+              '',
+              `_Opened automatically by the \`update-knockouts\` workflow on ${new Date().toISOString()}._`,
+            ].join('\n');
+
+            const issue = await github.rest.issues.create({
+              owner, repo,
+              title: 'Update World Cup 2026 knockout line-ups',
+              body,
+              labels: [label],
+            });
+            core.info(`Created issue #${issue.data.number}.`);
+
+            if (!copilot) {
+              core.warning('Copilot coding agent is not available as an assignee for this repository. ' +
+                'Enable Copilot coding agent, or assign the issue manually.');
+              return;
+            }
+
+            await github.graphql(`
+              mutation($assignableId: ID!, $actorIds: [ID!]!) {
+                replaceActorsForAssignable(input: { assignableId: $assignableId, actorIds: $actorIds }) {
+                  assignable { ... on Issue { number } }
+                }
+              }`, { assignableId: issue.data.node_id, actorIds: [copilot.id] });
+            core.info(`Assigned issue #${issue.data.number} to ${copilot.login}.`);

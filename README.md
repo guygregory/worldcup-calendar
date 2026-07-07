@@ -40,7 +40,8 @@ scripts/
   build-data.js         # Compiles ET-based schedule -> fixtures.json
   build-ics.js          # Emits feeds/all.ics + per-team + per-group
 feeds/                  # Generated .ics calendar feeds
-.github/workflows/pages.yml  # Build + deploy to GitHub Pages
+.github/workflows/pages.yml             # Build + deploy to GitHub Pages
+.github/workflows/update-knockouts.yml  # Twice-daily agentic knockout line-up update
 ```
 
 ## Local development
@@ -68,6 +69,17 @@ The workflow at `.github/workflows/pages.yml` builds the data and feeds on every
 - Group draw: official FIFA Final Draw, 5 December 2025.
 
 If you spot an error in `data/fixtures.json` (or want to add knockout team names once results land), open a PR — the calendar feeds rebuild automatically.
+
+## Automatic knockout line-ups
+
+Knockout fixtures start life as placeholders (`Winner Group A`, `Runner-up Group B`, `Winner Match 74`, …). The workflow at `.github/workflows/update-knockouts.yml` keeps them current automatically:
+
+- It runs **twice a day at 01:00 and 13:00 UK time** (`0 0,12 * * *` UTC — the tournament runs during British Summer Time, UTC+1), and can also be triggered manually via **workflow_dispatch**.
+- Each run asks the **GitHub Copilot coding agent** to check the [official FIFA fixtures page](https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/scores-fixtures?country=GB&wtw-filter=ALL&stage=none&team=none) for newly-decided results and to fill in the confirmed teams.
+- The agent replaces the placeholder refs in the `KO` array of `scripts/build-data.js` with resolved three-letter team codes (e.g. `'W:A'` → `'MEX'`), rebuilds the data and feeds, and opens a pull request.
+- It avoids stacking duplicate tasks (it skips when an update issue is already open) and **stops after 21 July 2026** — the tournament ends on 19 July 2026, so no further checks run past that date.
+
+Requires the Copilot coding agent to be enabled for the repository. If it is not available, the workflow still opens a tracking issue for a human to pick up.
 
 ## License
 

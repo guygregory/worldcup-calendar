@@ -111,6 +111,10 @@ const GS = [
 //   "3:A,B,C,D,F" = Third place from one of those groups
 //   "M:74"  = Winner of Match 74
 //   "ML:101"= Loser of Match 101 (used for bronze final)
+//
+// Once a knockout result is known, replace the placeholder with the resolved
+// three-letter team code (e.g. 'W:A' -> 'MEX'). See makeSlot() below and
+// .github/workflows/update-knockouts.yml, which automates these edits.
 
 const KO = [
   // [matchNo, stage, homeRef, awayRef, venueId, etDate, etTime]
@@ -187,6 +191,10 @@ for (const [matchNo, group, home, away, venueId, date, time] of GS) {
 
 function makeSlot(ref) {
   // returns { label, potentialTeams: [codes], placeholder: ref }
+  // A resolved three-letter team code (e.g. 'MEX') pins the slot to that team.
+  if (teams[ref]) {
+    return { team: ref };
+  }
   if (ref.startsWith('W:') || ref.startsWith('R:')) {
     const g = ref.slice(2);
     const label = (ref[0] === 'W' ? 'Winner Group ' : 'Runner-up Group ') + g;
